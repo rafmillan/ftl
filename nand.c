@@ -10,7 +10,7 @@ L2PEntry l2p_overflow[OVERFLOW_SIZE];
 
 void nand_init(void)
 {
-    uint32_t block, page;
+    uint32_t block, page, lba;
     for (block = 0; block < NAND_SIZE; block++) {
         Block* blk = &(nand_t->blocks[block]);
         for (page = 0; page < PAGES_PER_BLOCK; page++) {
@@ -24,6 +24,8 @@ void nand_init(void)
     nand_t->next_lba = 0;
     nand_t->max_lba = PAGES_PER_BLOCK*NAND_SIZE-1;
 
+    l2p_init();
+    
     get_nand_info();
 }
 
@@ -326,8 +328,6 @@ int nand_page_write(const uint8_t* wbuf, uint32_t block, uint32_t page)
         pg->data[i] = wbuf[i];
         DBG_MSG("nand write data %d:%d:%d (0x%02X) -> LBA %d\n", block, page, i, pg->data[i], nand_t->next_lba);
     }
-
-    nand_t->next_lba++;
 
     return RET_SUCCESS;
 }
