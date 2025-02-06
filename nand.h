@@ -60,6 +60,8 @@ void get_nand_info(void);
 void l2p_init(void);
 
 int insert_lba(uint32_t lba, uint32_t block, uint32_t page);
+int l2p_lookup(uint32_t lba, uint32_t* block, uint32_t* page);
+int l2p_delete(uint32_t lba);
 
 int nand_write_bytes(const uint8_t* wbuf, uint32_t size);
 int nand_page_read(uint8_t* rbuf, uint32_t block, uint32_t page);
