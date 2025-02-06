@@ -15,7 +15,7 @@ void nand_init(void)
         nand_block_erase(block);
     }
     nand_t->blk_idx = 0;
-    nand_t->next_lba = 0;
+    nand_t->next_lba = UINT32_MAX;
     nand_t->max_lba = PAGES_PER_BLOCK*NAND_SIZE-1;
 
     l2p_init();
@@ -57,8 +57,6 @@ int insert_lba(uint32_t lba, uint32_t block, uint32_t page)
     uint32_t hash;
     L2PEntry* entry;
     Page* _page;
-
-
 
     hash = lba_hash(lba);
     entry = &(l2p_primary[hash]);
@@ -125,6 +123,31 @@ int insert_lba(uint32_t lba, uint32_t block, uint32_t page)
     return RET_SUCCESS;
 }
 
+int get_next_lba(void)
+{
+    uint32_t next_lba = nand_t->next_lba;
+
+    // Case 1: next_lba is unassigned
+    if (next_lba == UINT32_MAX) {
+        nand_t->next_lba = 0;  // Start assigning from LBA 0
+        return 0;
+    }
+
+    // Case 2: next_lba is assigned - find the next available LBA
+    for (uint32_t lba = next_lba; lba <= get_max_lba(); lba++) {
+        uint32_t block, page;
+        // Check if the LBA is already mapped
+        if (l2p_lookup(lba, &block, &page) != RET_SUCCESS) {
+            // LBA is available
+            nand_t->next_lba = lba + 1;  // Update next_lba for future calls
+            return lba;
+        }
+    }
+
+    // No available LBAs
+    return RET_FAILURE;
+}
+
 int read_lba(uint32_t lba, uint8_t* rbuf)
 {
     if (rbuf == NULL)
@@ -143,14 +166,15 @@ int read_lba(uint32_t lba, uint8_t* rbuf)
     return RET_SUCCESS;
 }
 
-
 int write_lba(uint32_t lba, uint8_t* wbuf)
 {
-    if (wbuf == NULL)
+    if (wbuf == NULL || lba > get_max_lba())
         return RET_FAILURE;
     
     uint32_t block;
     int free_idx;
+
+    // TODO Check if lba is available
 
     DBG_MSG("write lba %d\n", lba);
     free_idx = find_next_free_block();
@@ -160,9 +184,28 @@ int write_lba(uint32_t lba, uint8_t* wbuf)
 
     Block* blk = &(nand_t->blocks[free_idx]);
     nand_page_write(wbuf, free_idx, blk->next_wpage);
-    insert_lba(nand_t->next_lba++, free_idx, blk->next_wpage++);
+    insert_lba(lba, free_idx, blk->next_wpage++);
 
     return RET_SUCCESS;
+}
+
+int write_lba_range(uint32_t start_lba, uint32_t* wbuf, uint32_t size)
+{
+    if (wbuf == NULL)
+        return RET_FAILURE;
+    
+    uint32_t block;
+    int free_idx;
+    
+    free_idx = find_next_free_block();
+    if (free_idx < 0) {
+        return RET_FAILURE;
+    }
+
+
+
+    DBG_MSG("write lba range - start lba: %d, pages: %d\n", start_lba, size);
+
 }
 
 int l2p_lookup(uint32_t lba, uint32_t* block, uint32_t* page)
@@ -300,16 +343,15 @@ int nand_write_bytes(const uint8_t* wbuf, uint32_t size)
         return RET_FAILURE;
     }
 
-    start_lba = nand_t->next_lba;
-    curr_lba = start_lba;
-    DBG_MSG("start lba: 0x%08X\n", start_lba);
+    nand_t->next_lba = get_next_lba();
+    DBG_MSG("start lba: 0x%08X\n", nand_t->next_lba);
     
     index = 0;
     if (whole_pages > 0) {
         for (int p = 0; p < whole_pages; p++) {
             nand_page_write(wbuf + index, free_idx, curr_page);
-            insert_lba(nand_t->next_lba++, free_idx, curr_page++);
-            curr_lba = nand_t->next_lba;
+            insert_lba(nand_t->next_lba, free_idx, curr_page++);
+            nand_t->next_lba = get_next_lba();
             index += PAGE_SIZE;
             blk->next_wpage++;
             if (blk->next_wpage == PAGES_PER_BLOCK) {
@@ -331,13 +373,13 @@ int nand_write_bytes(const uint8_t* wbuf, uint32_t size)
 
             Page* pg = &(blk->pages[curr_page]);
             pg->data[index] = wbuf[windex];
-            DBG_MSG("nand write data %d:%d:%d (0x%02X) -> LBA %d\n", free_idx, curr_page, index, pg->data[index], curr_lba);
+            DBG_MSG("nand write data %d:%d:%d (0x%02X) -> LBA %d\n", free_idx, curr_page, index, pg->data[index], nand_t->next_lba);
             index++;
             windex++;
 
             if (((p_idx + 1) % PAGE_SIZE) == 0) {
-                insert_lba(nand_t->next_lba++, free_idx, curr_page);
-                curr_lba = nand_t->next_lba;
+                insert_lba(nand_t->next_lba, free_idx, curr_page);
+                nand_t->next_lba = get_next_lba();
                 blk->next_wpage = curr_page;
                 curr_page++;
                 windex = 0;
@@ -366,16 +408,10 @@ int nand_page_read(uint8_t* rbuf, uint32_t block, uint32_t page)
     Block* blk = &(nand_t->blocks[block]);
     Page* pg = &(blk->pages[page]);
 
-    uint32_t lba;
-    if (p2l_lookup(block, page, &lba) == RET_FAILURE) {
-        DBG_MSG("read error\n");
-        return RET_FAILURE;
-    }
-
     uint32_t buff_i;
     for (buff_i = 0; buff_i < PAGE_SIZE; buff_i++) {
         rbuf[buff_i] = pg->data[buff_i];
-        DBG_MSG("nand read data %d:%d:%d (%d) > 0x%02X\n", block, page, buff_i, lba, rbuf[buff_i]);
+        DBG_MSG("nand read data %d:%d:%d > 0x%02X\n", block, page, buff_i, rbuf[buff_i]);
     }
     
     return RET_SUCCESS;
@@ -393,7 +429,9 @@ int nand_page_write(const uint8_t* wbuf, uint32_t block, uint32_t page)
     uint32_t i;
     for (i = 0; i < PAGE_SIZE; i++) {
         pg->data[i] = wbuf[i];
+        nand_t->next_lba = get_next_lba();
         DBG_MSG("nand write data %d:%d:%d (0x%02X) -> LBA %d\n", block, page, i, pg->data[i], nand_t->next_lba);
+        nand_t->next_lba = get_next_lba();
     }
 
     return RET_SUCCESS;
