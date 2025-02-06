@@ -56,9 +56,13 @@ int insert_lba(uint32_t lba, uint32_t block, uint32_t page)
 {
     uint32_t hash;
     L2PEntry* entry;
+    Page* _page;
+
+
 
     hash = lba_hash(lba);
     entry = &(l2p_primary[hash]);
+    _page = &nand_t->blocks[block].pages[page];
 
     /* Empty LBA */
     if (entry->lba == UINT32_MAX) {
@@ -66,6 +70,7 @@ int insert_lba(uint32_t lba, uint32_t block, uint32_t page)
         entry->pba_block = block;
         entry->pba_page = page;
         entry->next = -1;
+        _page->p2l = entry;
         return RET_SUCCESS;
     }
 
@@ -73,6 +78,7 @@ int insert_lba(uint32_t lba, uint32_t block, uint32_t page)
     if (entry->lba == lba) {
         entry->pba_block = block;
         entry->pba_page = page;
+        _page->p2l = entry;
         return RET_SUCCESS;
     }
 
@@ -86,6 +92,7 @@ int insert_lba(uint32_t lba, uint32_t block, uint32_t page)
             // Update existing overflow entry
             overflow_entry->pba_block = block;
             overflow_entry->pba_page = page;
+            _page->p2l = overflow_entry;
             return RET_SUCCESS;
         }
         prev_index = current_index;
@@ -106,6 +113,8 @@ int insert_lba(uint32_t lba, uint32_t block, uint32_t page)
     new_entry->pba_block = block;
     new_entry->pba_page = page;
     new_entry->next = -1;
+    _page->p2l = new_entry;
+    
 
     if (prev_index == -1) {
         entry->next = new_index;
@@ -183,6 +192,22 @@ int l2p_lookup(uint32_t lba, uint32_t* block, uint32_t* page)
     }
 
     return RET_FAILURE;
+}
+
+int p2l_lookup(uint32_t block, uint32_t page, uint32_t* lba)
+{
+    if (block >= NAND_SIZE || page >= PAGES_PER_BLOCK)
+        return RET_FAILURE;
+
+    Page* _page = &nand_t->blocks[block].pages[page];
+    if (_page->p2l == NULL)
+        return RET_FAILURE;
+    
+    if (_page->p2l->lba > nand_t->max_lba)
+        return RET_FAILURE;
+
+    *lba = _page->p2l->lba;
+    return  RET_SUCCESS;
 }
 
 int l2p_delete(uint32_t lba)
@@ -341,10 +366,16 @@ int nand_page_read(uint8_t* rbuf, uint32_t block, uint32_t page)
     Block* blk = &(nand_t->blocks[block]);
     Page* pg = &(blk->pages[page]);
 
+    uint32_t lba;
+    if (p2l_lookup(block, page, &lba) == RET_FAILURE) {
+        DBG_MSG("read error\n");
+        return RET_FAILURE;
+    }
+
     uint32_t buff_i;
     for (buff_i = 0; buff_i < PAGE_SIZE; buff_i++) {
         rbuf[buff_i] = pg->data[buff_i];
-        DBG_MSG("nand read data %d:%d:%d > 0x%02X\n", block, page, buff_i, rbuf[buff_i]);
+        DBG_MSG("nand read data %d:%d:%d (%d) > 0x%02X\n", block, page, buff_i, lba, rbuf[buff_i]);
     }
     
     return RET_SUCCESS;
@@ -403,12 +434,15 @@ static int nand_page_erase(uint32_t block, uint32_t page)
         pg->ecc[i] = DATA_ERASED;
     }
 
+    // Erase P2L
+    pg->p2l = NULL;
+
     return RET_SUCCESS;
 }
 
 static int find_next_free_block(void) {
     for (uint32_t i = nand_t->blk_idx; i < NAND_SIZE; i++) {
-        if (nand_t->blocks[i].next_wpage == 0) {
+        if (nand_t->blocks[i].next_wpage != PAGES_PER_BLOCK) {
             return i;
         }
     }

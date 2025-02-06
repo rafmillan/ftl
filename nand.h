@@ -24,10 +24,19 @@
 
 #define DATA_ERASED         0xFF
 
+struct mappingEntry {
+    uint32_t lba;
+    uint32_t pba_block;
+    uint32_t pba_page;
+    uint32_t next;
+};
+typedef struct mappingEntry L2PEntry;
+
 struct page {
     uint8_t data[PAGE_SIZE];
     uint8_t valid;
     uint8_t ecc[ECC_SIZE];
+    L2PEntry* p2l;
 };
 typedef struct page Page;
 
@@ -45,14 +54,6 @@ struct nand {
     uint32_t next_lba;
 };
 typedef struct nand NAND;
-
-struct mappingEntry {
-    uint32_t lba;
-    uint32_t pba_block;
-    uint32_t pba_page;
-    uint32_t next;
-};
-typedef struct mappingEntry L2PEntry;
 
 void nand_init(void);
 
