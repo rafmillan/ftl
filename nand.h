@@ -55,11 +55,16 @@ struct mappingEntry {
 typedef struct mappingEntry L2PEntry;
 
 void nand_init(void);
+
 void get_nand_info(void);
+uint32_t get_max_lba(void);
 
 void l2p_init(void);
 
 int insert_lba(uint32_t lba, uint32_t block, uint32_t page);
+int write_lba(uint32_t lba, uint8_t* wbuf);
+int read_lba(uint32_t lba, uint8_t* rbuf);
+
 int l2p_lookup(uint32_t lba, uint32_t* block, uint32_t* page);
 int l2p_delete(uint32_t lba);
 
