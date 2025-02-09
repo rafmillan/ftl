@@ -65,6 +65,7 @@ void l2p_init(void);
 int insert_lba(uint32_t lba, uint32_t block, uint32_t page);
 int write_lba(uint32_t lba, uint8_t* wbuf);
 int read_lba(uint32_t lba, uint8_t* rbuf);
+int trim_lba(uint32_t lba);
 
 int l2p_lookup(uint32_t lba, uint32_t* block, uint32_t* page);
 int l2p_delete(uint32_t lba);

@@ -158,7 +158,7 @@ int read_lba(uint32_t lba, uint8_t* rbuf)
     
     DBG_MSG("read lba %d\n", lba);
     if (l2p_lookup(lba, &block, &page) == RET_FAILURE) {
-        DBG_MSG("error: invalid lba");
+        DBG_MSG("error: invalid lba\n");
         return RET_FAILURE;
     }
 
@@ -187,6 +187,28 @@ int write_lba(uint32_t lba, uint8_t* wbuf)
     insert_lba(lba, free_idx, blk->next_wpage++);
 
     return RET_SUCCESS;
+}
+
+int trim_lba(uint32_t lba) {
+    if (lba > get_max_lba())
+        return RET_FAILURE;
+
+    uint32_t block;
+    uint32_t page;
+    L2PEntry* entry;
+
+    DBG_MSG("trim lba %d\n", lba);
+    if (l2p_lookup(lba, &block, &page) == RET_FAILURE) {
+        DBG_MSG("error: invalid lba\n");
+        return RET_FAILURE;
+    }
+
+    if (l2p_delete(lba) == RET_FAILURE) {
+        DBG_MSG("error: could not delete L2P entry\n");
+        return RET_FAILURE;
+    }
+
+    nand_t->blocks[block].pages[page].p2l = NULL;
 }
 
 int write_lba_range(uint32_t start_lba, uint32_t* wbuf, uint32_t size)
@@ -484,6 +506,7 @@ static int find_next_free_block(void) {
             return i;
         }
     }
+    DBG_MSG("error: cannot find next free block\n");
     return -1;  // No free block available
 }
 
