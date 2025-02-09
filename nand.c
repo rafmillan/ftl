@@ -1,4 +1,5 @@
 #include "nand.h"
+#include "string.h"
 
 // Compile-time allocation
 static NAND nand_die;  
@@ -15,7 +16,7 @@ void nand_init(void)
         nand_block_erase(block);
     }
     nand_t->blk_idx = 0;
-    nand_t->next_lba = UINT32_MAX;
+    nand_t->next_lba = 0;
     nand_t->max_lba = PAGES_PER_BLOCK*NAND_SIZE-1;
 
     l2p_init();
@@ -25,13 +26,13 @@ void nand_init(void)
 
 void get_nand_info(void)
 {
-    DBG_MSG("BLOCKS\t\t\t%d\t(0x%08x)\n", NAND_SIZE, NAND_SIZE);
+    DBG_MSG("BLOCKS\t\t\t\t\t%d\t(0x%08x)\n", NAND_SIZE, NAND_SIZE);
     DBG_MSG("PAGES PER BLOCK\t\t\t%d\t(0x%08x)\n", PAGES_PER_BLOCK, PAGES_PER_BLOCK);
-    DBG_MSG("TOTAL PAGES\t\t\t%d\t(0x%08x)\n", PAGES_PER_BLOCK*NAND_SIZE, PAGES_PER_BLOCK*NAND_SIZE);
-    DBG_MSG("PAGE SIZE\t\t\t%d\t(0x%08x)\n", PAGE_SIZE, PAGE_SIZE);
-    DBG_MSG("TOTAL BYTES\t\t\t%d\t(0x%08x)\n", PAGE_SIZE*PAGES_PER_BLOCK*NAND_SIZE, PAGE_SIZE*PAGES_PER_BLOCK*NAND_SIZE);
-    DBG_MSG("TOTAL LBA\t\t\t%d\t(0x%08x)\n", PAGES_PER_BLOCK*NAND_SIZE, PAGES_PER_BLOCK*NAND_SIZE);
-    DBG_MSG("MAX LBA\t\t\t%d\t(0x%08x)\n", nand_t->max_lba, nand_t->max_lba);
+    DBG_MSG("TOTAL PAGES\t\t\t\t%d\t(0x%08x)\n", PAGES_PER_BLOCK*NAND_SIZE, PAGES_PER_BLOCK*NAND_SIZE);
+    DBG_MSG("PAGE SIZE\t\t\t\t%d\t(0x%08x)\n", PAGE_SIZE, PAGE_SIZE);
+    DBG_MSG("TOTAL BYTES\t\t\t\t%d\t(0x%08x)\n", PAGE_SIZE*PAGES_PER_BLOCK*NAND_SIZE, PAGE_SIZE*PAGES_PER_BLOCK*NAND_SIZE);
+    DBG_MSG("TOTAL LBA\t\t\t\t%d\t(0x%08x)\n", PAGES_PER_BLOCK*NAND_SIZE, PAGES_PER_BLOCK*NAND_SIZE);
+    DBG_MSG("MAX LBA\t\t\t\t\t%d\t(0x%08x)\n", nand_t->max_lba, nand_t->max_lba);
 }
 
 uint32_t get_max_lba(void)
@@ -50,20 +51,26 @@ void l2p_init(void)
         l2p_overflow[i].lba = UINT32_MAX;
         l2p_overflow[i].next = (i == OVERFLOW_SIZE - 1) ? -1 : i + 1;
     }
+
+    overflow_free_head = 0;
 }
 
-int insert_lba(uint32_t lba, uint32_t block, uint32_t page)
+static int l2p_insert(uint32_t lba, uint32_t block, uint32_t page)
 {
+    if (lba > get_max_lba())
+        return RET_FAILURE;
+
     uint32_t hash;
     L2PEntry* entry;
     Page* _page;
 
     hash = lba_hash(lba);
-    entry = &(l2p_primary[hash]);
+    entry = &l2p_primary[hash];
     _page = &nand_t->blocks[block].pages[page];
 
-    /* Empty LBA */
+    /* Empty primary entry: use it directly */
     if (entry->lba == UINT32_MAX) {
+        DBG_MSG("free l2p entry\n");
         entry->lba = lba;
         entry->pba_block = block;
         entry->pba_page = page;
@@ -72,22 +79,23 @@ int insert_lba(uint32_t lba, uint32_t block, uint32_t page)
         return RET_SUCCESS;
     }
 
-    /* Update LBA */
+    /* Update primary entry if LBA already exists */
     if (entry->lba == lba) {
+        DBG_MSG("update l2p primary entry\n");
         entry->pba_block = block;
         entry->pba_page = page;
         _page->p2l = entry;
         return RET_SUCCESS;
     }
 
-    /* Collision */
+    /* Collision: traverse the overflow chain */
+    DBG_MSG("l2p map collision\n");
     int16_t prev_index = -1;
     int16_t current_index = entry->next;
-
     while (current_index != -1) {
-        L2PEntry *overflow_entry = &l2p_overflow[current_index];
+        L2PEntry* overflow_entry = &l2p_overflow[current_index];
         if (overflow_entry->lba == lba) {
-            // Update existing overflow entry
+            // Found an existing mapping in the overflow: update it.
             overflow_entry->pba_block = block;
             overflow_entry->pba_page = page;
             _page->p2l = overflow_entry;
@@ -97,24 +105,27 @@ int insert_lba(uint32_t lba, uint32_t block, uint32_t page)
         current_index = overflow_entry->next;
     }
 
-    /* New overflow entry */
-    if (overflow_free_head == OVERFLOW_SIZE) {
-        return RET_FAILURE; // No free overflow slots
+    /* Allocate a new overflow entry from the free list */
+    if (overflow_free_head == -1) {
+        // No free overflow slots available.
+        return RET_FAILURE;
     }
 
-    /* Take available overflow index */
+    // Pop the free list: take the free index from the head.
     int16_t new_index = overflow_free_head;
     L2PEntry *new_entry = &l2p_overflow[new_index];
-    overflow_free_head++;
+    overflow_free_head = new_entry->next;  // Advance the free list head.
 
+    // Populate the new overflow entry.
     new_entry->lba = lba;
     new_entry->pba_block = block;
     new_entry->pba_page = page;
-    new_entry->next = -1;
+    new_entry->next = -1;  // This new entry is added at the end of the chain.
     _page->p2l = new_entry;
-    
 
+    /* Append the new entry to the overflow chain */
     if (prev_index == -1) {
+        // There was no overflow chain before; attach new entry as first overflow.
         entry->next = new_index;
     } else {
         l2p_overflow[prev_index].next = new_index;
@@ -139,7 +150,6 @@ int get_next_lba(void)
         // Check if the LBA is already mapped
         if (l2p_lookup(lba, &block, &page) != RET_SUCCESS) {
             // LBA is available
-            nand_t->next_lba = lba + 1;  // Update next_lba for future calls
             return lba;
         }
     }
@@ -174,8 +184,6 @@ int write_lba(uint32_t lba, uint8_t* wbuf)
     uint32_t block;
     int free_idx;
 
-    // TODO Check if lba is available
-
     DBG_MSG("write lba %d\n", lba);
     free_idx = find_next_free_block();
     if (free_idx < 0) {
@@ -183,8 +191,10 @@ int write_lba(uint32_t lba, uint8_t* wbuf)
     }
 
     Block* blk = &(nand_t->blocks[free_idx]);
-    nand_page_write(wbuf, free_idx, blk->next_wpage);
-    insert_lba(lba, free_idx, blk->next_wpage++);
+    l2p_insert(lba, free_idx, blk->next_wpage);
+    if (nand_page_write(wbuf, free_idx, blk->next_wpage++) == RET_FAILURE) {
+        return RET_FAILURE;
+    }
 
     return RET_SUCCESS;
 }
@@ -209,25 +219,7 @@ int trim_lba(uint32_t lba) {
     }
 
     nand_t->blocks[block].pages[page].p2l = NULL;
-}
-
-int write_lba_range(uint32_t start_lba, uint32_t* wbuf, uint32_t size)
-{
-    if (wbuf == NULL)
-        return RET_FAILURE;
-    
-    uint32_t block;
-    int free_idx;
-    
-    free_idx = find_next_free_block();
-    if (free_idx < 0) {
-        return RET_FAILURE;
-    }
-
-
-
-    DBG_MSG("write lba range - start lba: %d, pages: %d\n", start_lba, size);
-
+    return RET_SUCCESS;
 }
 
 int l2p_lookup(uint32_t lba, uint32_t* block, uint32_t* page)
@@ -247,8 +239,8 @@ int l2p_lookup(uint32_t lba, uint32_t* block, uint32_t* page)
 
     uint32_t curr_index = entry->next;
     while (curr_index != -1) {
-        L2PEntry* overflow = &(l2p_overflow[hash]);
-        if (entry->lba == lba) {
+        L2PEntry* overflow = &(l2p_overflow[curr_index]);
+        if (overflow->lba == lba) {
             *block = overflow->pba_block;
             *page = overflow->pba_page;
             return RET_SUCCESS;
@@ -275,53 +267,57 @@ int p2l_lookup(uint32_t block, uint32_t page, uint32_t* lba)
     return  RET_SUCCESS;
 }
 
-int l2p_delete(uint32_t lba)
+static int l2p_delete(uint32_t lba)
 {
     uint32_t hash = lba_hash(lba);
-    L2PEntry* entry = &(l2p_primary[hash]);
+    L2PEntry* entry = &l2p_primary[hash];
 
-    int16_t current_index = entry->next;
+    // Check if the primary entry matches the target LBA.
     if (entry->lba == lba) {
-        if (current_index != -1) {
-            // Promote the first overflow entry to primary
-            L2PEntry* overflow_entry = &l2p_overflow[current_index];
-            entry->lba = overflow_entry->lba;
-            entry->pba_block = overflow_entry->pba_block;
-            entry->pba_page = overflow_entry->pba_page;
-            entry->next = overflow_entry->next;
+        // If there is an overflow chain, promote the first overflow entry.
+        if (entry->next != -1) {
+            int16_t promoted_index = entry->next;
+            L2PEntry* promoted_entry = &l2p_overflow[promoted_index];
 
-            // Reclaim the overflow slot
-            overflow_entry->next = -1;
-            overflow_entry->lba = UINT32_MAX; // Clear the entry
-            overflow_entry->pba_block = 0;
-            overflow_entry->pba_page = 0;
-            overflow_free_head = current_index;
+            // Copy the overflow entry into the primary entry.
+            entry->lba = promoted_entry->lba;
+            entry->pba_block = promoted_entry->pba_block;
+            entry->pba_page = promoted_entry->pba_page;
+            entry->next = promoted_entry->next;
+
+            // Reclaim the promoted overflow slot by pushing it onto the free list.
+            promoted_entry->lba = UINT32_MAX;  // Mark as free.
+            promoted_entry->pba_block = 0;
+            promoted_entry->pba_page = 0;
+            promoted_entry->next = overflow_free_head; // Link the freed slot.
+            overflow_free_head = promoted_index;
         } else {
-            // Mark primary entry as empty
+            // No overflow entries: simply clear the primary entry.
             entry->lba = UINT32_MAX;
-            entry->pba_block = 0; // Optionally clear these fields
+            entry->pba_block = 0;
             entry->pba_page = 0;
         }
         return RET_SUCCESS;
     }
 
-    // Traverse overflow chain
+    // If the primary entry doesn't match, traverse the overflow chain.
     int16_t prev_index = -1;
+    int16_t current_index = entry->next;
     while (current_index != -1) {
         L2PEntry* overflow_entry = &l2p_overflow[current_index];
         if (overflow_entry->lba == lba) {
-            // Unlink the entry
+            // Unlink the entry from the chain.
             if (prev_index == -1) {
                 entry->next = overflow_entry->next;
             } else {
                 l2p_overflow[prev_index].next = overflow_entry->next;
             }
 
-            // Reclaim the overflow slot
-            overflow_entry->next = overflow_free_head;
-            overflow_entry->lba = UINT32_MAX; // Clear the entry
+            // Reclaim the freed slot by pushing it onto the free list.
+            overflow_entry->lba = UINT32_MAX;  // Mark as free.
             overflow_entry->pba_block = 0;
             overflow_entry->pba_page = 0;
+            overflow_entry->next = overflow_free_head;
             overflow_free_head = current_index;
             return RET_SUCCESS;
         }
@@ -329,96 +325,7 @@ int l2p_delete(uint32_t lba)
         current_index = overflow_entry->next;
     }
 
-    return RET_FAILURE; // LBA not found
-}
-
-int nand_write_bytes(const uint8_t* wbuf, uint32_t size)
-{
-    uint32_t free_idx;
-    uint32_t start_page;
-    uint32_t curr_page;
-    uint32_t whole_pages;
-    uint32_t rem_bytes;
-    uint32_t index;
-    uint32_t windex;
-    uint32_t start_lba;
-    uint32_t curr_lba;
-    
-    free_idx = find_next_free_block();
-    if (free_idx < 0) {
-        return RET_FAILURE;
-    }
-
-    Block* blk = &(nand_t->blocks[free_idx]);
-    start_page = blk->next_wpage;
-    curr_page = start_page;
-
-    whole_pages = size / PAGE_SIZE;
-    rem_bytes = size % PAGE_SIZE;
-
-    DBG_MSG("nand write size: 0x%08X bytes\n", size);
-    DBG_MSG("total write pages: 0x%08X\n", whole_pages);
-    DBG_MSG("total rem bytes: 0x%08X\n", rem_bytes);
-
-    if (size != ((whole_pages * PAGE_SIZE) + rem_bytes)) {
-        DBG_MSG("value error");
-        return RET_FAILURE;
-    }
-
-    nand_t->next_lba = get_next_lba();
-    DBG_MSG("start lba: 0x%08X\n", nand_t->next_lba);
-    
-    index = 0;
-    if (whole_pages > 0) {
-        for (int p = 0; p < whole_pages; p++) {
-            nand_page_write(wbuf + index, free_idx, curr_page);
-            insert_lba(nand_t->next_lba, free_idx, curr_page++);
-            nand_t->next_lba = get_next_lba();
-            index += PAGE_SIZE;
-            blk->next_wpage++;
-            if (blk->next_wpage == PAGES_PER_BLOCK) {
-                DBG_MSG("write reached end of block\n");
-                curr_page = 0;
-                free_idx = find_next_free_block();
-                if (free_idx < 0)
-                    return RET_FAILURE;
-                blk = &(nand_t->blocks[free_idx]);
-            }
-        }
-    }
-
-    windex = 0;
-    index = 0;
-    if (rem_bytes > 0) {
-        while (index < rem_bytes) {
-            uint32_t p_idx = (index + 1) % PAGE_SIZE;
-
-            Page* pg = &(blk->pages[curr_page]);
-            pg->data[index] = wbuf[windex];
-            DBG_MSG("nand write data %d:%d:%d (0x%02X) -> LBA %d\n", free_idx, curr_page, index, pg->data[index], nand_t->next_lba);
-            index++;
-            windex++;
-
-            if (((p_idx + 1) % PAGE_SIZE) == 0) {
-                insert_lba(nand_t->next_lba, free_idx, curr_page);
-                nand_t->next_lba = get_next_lba();
-                blk->next_wpage = curr_page;
-                curr_page++;
-                windex = 0;
-                if (curr_page == PAGES_PER_BLOCK) {
-                    DBG_MSG("write reached end of block\n");
-                    curr_page = 0;
-                    free_idx = find_next_free_block();
-                    if (free_idx < 0)
-                        return RET_FAILURE;
-                    blk = &(nand_t->blocks[free_idx]);
-                }
-            }
-        }
-        blk->next_wpage++;
-    }
-
-    return RET_SUCCESS;
+    return RET_FAILURE; // LBA not found.
 }
 
 int nand_page_read(uint8_t* rbuf, uint32_t block, uint32_t page)
@@ -433,7 +340,7 @@ int nand_page_read(uint8_t* rbuf, uint32_t block, uint32_t page)
     uint32_t buff_i;
     for (buff_i = 0; buff_i < PAGE_SIZE; buff_i++) {
         rbuf[buff_i] = pg->data[buff_i];
-        DBG_MSG("nand read data %d:%d:%d > 0x%02X\n", block, page, buff_i, rbuf[buff_i]);
+        //DBG_MSG("nand read data %d:%d:%d > 0x%02X\n", block, page, buff_i, rbuf[buff_i]);
     }
     
     return RET_SUCCESS;
@@ -451,9 +358,7 @@ int nand_page_write(const uint8_t* wbuf, uint32_t block, uint32_t page)
     uint32_t i;
     for (i = 0; i < PAGE_SIZE; i++) {
         pg->data[i] = wbuf[i];
-        nand_t->next_lba = get_next_lba();
-        DBG_MSG("nand write data %d:%d:%d (0x%02X) -> LBA %d\n", block, page, i, pg->data[i], nand_t->next_lba);
-        nand_t->next_lba = get_next_lba();
+        //DBG_MSG("nand write data %d:%d:%d (0x%02X) -> LBA %d\n", block, page, i, pg->data[i], nand_t->next_lba);
     }
 
     return RET_SUCCESS;
@@ -466,6 +371,8 @@ int nand_block_erase(uint32_t block)
 
     uint32_t page;
     Block* blk = &(nand_t->blocks[block]);
+
+    DBG_MSG("block erase to blk: %d\n", block);
 
     // Erase all pages
     for (page = 0; page < PAGES_PER_BLOCK; page++) {
