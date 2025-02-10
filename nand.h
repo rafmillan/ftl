@@ -24,7 +24,7 @@
 
 #define DATA_ERASED         0xFF
 
-struct __attribute((packed)) mappingEntry {
+struct /*__attribute((packed))*/ mappingEntry {
     uint32_t lba;
     uint32_t pba_block;
     uint32_t pba_page;
@@ -32,25 +32,26 @@ struct __attribute((packed)) mappingEntry {
 };
 typedef struct mappingEntry L2PEntry;
 
-struct page {
+struct /*__attribute((packed))*/ page {
     uint8_t data[PAGE_SIZE];
-    uint8_t ecc[ECC_SIZE];
+    uint32_t ecc;
     L2PEntry* p2l;
     uint8_t valid;
 };
 typedef struct page Page;
 
-struct __attribute((packed)) block {
+struct /*__attribute((packed))*/ block {
     Page pages[PAGES_PER_BLOCK];
     uint32_t erase_count;
     uint32_t next_wpage;
 };
 typedef struct block Block;
 
-struct __attribute((packed)) nand {
+struct /*__attribute((packed))*/ nand {
     uint32_t blk_idx;
     uint32_t max_lba;
     uint32_t next_lba;
+    uint32_t free_block_count;
     Block blocks[NAND_SIZE];
 };
 typedef struct nand NAND;

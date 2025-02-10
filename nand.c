@@ -18,6 +18,7 @@ void nand_init(void)
     nand_t->blk_idx = 0;
     nand_t->next_lba = 0;
     nand_t->max_lba = PAGES_PER_BLOCK*NAND_SIZE-1;
+    nand_t->free_block_count = NAND_SIZE;
 
     l2p_init();
 
@@ -191,9 +192,19 @@ int write_lba(uint32_t lba, uint8_t* wbuf)
     }
 
     Block* blk = &(nand_t->blocks[free_idx]);
-    l2p_insert(lba, free_idx, blk->next_wpage);
+    
+    if (l2p_insert(lba, free_idx, blk->next_wpage) == RET_FAILURE) {
+        return RET_FAILURE;
+    }
+
     if (nand_page_write(wbuf, free_idx, blk->next_wpage++) == RET_FAILURE) {
         return RET_FAILURE;
+    }
+
+    // If blockis full, decrement free block count
+    if (blk->next_wpage == PAGES_PER_BLOCK) {
+        nand_t->free_block_count--;
+        DBG_MSG("free block count = %d\n", nand_t->free_block_count);
     }
 
     return RET_SUCCESS;
@@ -382,6 +393,7 @@ int nand_block_erase(uint32_t block)
 
     blk->erase_count++;
     blk->next_wpage = 0;
+    nand_t->free_block_count++;
     return RET_SUCCESS;
 }
 
@@ -397,9 +409,7 @@ static int nand_page_erase(uint32_t block, uint32_t page)
     }
 
     // Erase page ECC
-    for (i = 0; i < ECC_SIZE; i++) {
-        pg->ecc[i] = DATA_ERASED;
-    }
+    pg->ecc = 0;
 
     // Erase P2L
     pg->p2l = NULL;
