@@ -20,7 +20,7 @@
 #define BUFF_SIZE           64
 #define HASH_SIZE           16      //1024    // Size of primary hash table (adjust based on LBA range)
 #define OVERFLOW_SIZE       16      //256     // Size of overflow pool (adjust based on collision expectations)
-
+#define MAX_ERASE_CYCLES    64
 
 #define DATA_ERASED         0xFF
 
@@ -48,7 +48,6 @@ struct /*__attribute((packed))*/ block {
 typedef struct block Block;
 
 struct /*__attribute((packed))*/ nand {
-    uint32_t blk_idx;
     uint32_t max_lba;
     uint32_t next_lba;
     uint32_t free_block_count;

@@ -15,7 +15,6 @@ void nand_init(void)
     for (block = 0; block < NAND_SIZE; block++) {
         nand_block_erase(block);
     }
-    nand_t->blk_idx = 0;
     nand_t->next_lba = 0;
     nand_t->max_lba = PAGES_PER_BLOCK*NAND_SIZE-1;
     nand_t->free_block_count = NAND_SIZE;
@@ -417,14 +416,26 @@ static int nand_page_erase(uint32_t block, uint32_t page)
     return RET_SUCCESS;
 }
 
-static int find_next_free_block(void) {
-    for (uint32_t i = nand_t->blk_idx; i < NAND_SIZE; i++) {
+static int find_next_free_block(void)
+{
+    uint32_t min_count = MAX_ERASE_CYCLES;
+    uint32_t next_block = -1;
+
+    for (uint32_t i = 0; i < NAND_SIZE; i++) {
         if (nand_t->blocks[i].next_wpage != PAGES_PER_BLOCK) {
-            return i;
+            if (nand_t->blocks[i].erase_count < min_count) {
+                min_count = nand_t->blocks[i].erase_count;
+                next_block = i;
+            }
         }
     }
-    DBG_MSG("error: cannot find next free block\n");
-    return -1;  // No free block available
+    
+    if (next_block == -1) {
+        DBG_MSG("error: cannot find next free block\n");
+        return -1;  // No free block available
+    }
+
+    return next_block;
 }
 
 static inline uint32_t lba_hash(uint32_t lba) {
