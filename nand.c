@@ -12,6 +12,13 @@ L2PEntry l2p_overflow[OVERFLOW_SIZE];
 void nand_init(void)
 {
     uint32_t block, page, lba;
+
+    for (block = 0; block < NAND_SIZE; block++) {
+        nand_t->blocks[block].erase_count = 0;
+        nand_t->blocks[block].marked_bad = 0;
+        nand_t->blocks[block].next_wpage = 0;
+    }
+
     for (block = 0; block < NAND_SIZE; block++) {
         nand_block_erase(block);
     }
@@ -385,6 +392,29 @@ int nand_page_write(const uint8_t* wbuf, uint32_t block, uint32_t page)
     return RET_SUCCESS;
 }
 
+int nand_mark_bad(uint32_t block) {
+    if (block > NAND_SIZE)
+        return RET_FAILURE;
+
+    Block* blk = &(nand_t->blocks[block]);
+    blk->marked_bad = BAD_BLOCK;
+    uint32_t lba;
+
+    for (uint32_t page = 0; page < PAGES_PER_BLOCK; page++) {
+        if (p2l_lookup(block, page, &lba) == RET_FAILURE) {
+            DBG_MSG("error: could not get physical location for lba %d\n", lba);
+            continue;
+        }   
+        
+        if (trim_lba(lba) == RET_FAILURE) {
+            DBG_MSG("error: could not trim lba %d\n", lba);
+            return RET_FAILURE;
+        }
+    }
+
+    return RET_SUCCESS;
+}
+
 int nand_block_erase(uint32_t block)
 {
     if (block >= NAND_SIZE)
@@ -408,6 +438,9 @@ int nand_block_erase(uint32_t block)
         blk->erase_count++;
     } else {
         DBG_MSG("warning: erase count limit reached for block %d\n", block);
+        if (nand_mark_bad(block) == RET_FAILURE) {
+            DBG_MSG("critical warning: failed to mark bad block %d\n", block);
+        }
     }
     return RET_SUCCESS;
 }

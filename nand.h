@@ -23,6 +23,7 @@
 #define MAX_ERASE_CYCLES    64
 
 #define DATA_ERASED         0xFF
+#define BAD_BLOCK           0x01
 
 struct /*__attribute((packed))*/ mappingEntry {
     uint32_t lba;
@@ -44,6 +45,7 @@ struct /*__attribute((packed))*/ block {
     Page pages[PAGES_PER_BLOCK];
     uint32_t erase_count;
     uint32_t next_wpage;
+    uint8_t marked_bad;
 };
 typedef struct block Block;
 
@@ -72,6 +74,7 @@ int l2p_lookup(uint32_t lba, uint32_t* block, uint32_t* page);
 int nand_page_read(uint8_t* rbuf, uint32_t block, uint32_t page);
 int nand_page_write(const uint8_t* wbuf, uint32_t block, uint32_t page);
 int nand_block_erase(uint32_t block);
+int nand_mark_bad(uint32_t block);
 
 static int nand_page_erase(uint32_t block, uint32_t page);
 static int find_next_free_block(void);
