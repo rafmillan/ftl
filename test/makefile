@@ -1,6 +1,6 @@
 # Compiler and flags
 CC      := gcc
-CFLAGS  := -I..
+CFLAGS  := -g -I..
 
 #-Wall -Wextra -O2
 # Additional libraries (link these after the object files)
