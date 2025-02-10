@@ -24,6 +24,8 @@
 
 #define DATA_ERASED         0xFF
 #define BAD_BLOCK           0x01
+#define EXCEED_PE_CYCLES    0x02
+#define MANUAL_MARKBAD      0x04
 
 struct /*__attribute((packed))*/ mappingEntry {
     uint32_t lba;
@@ -67,15 +69,16 @@ void l2p_init(void);
 int write_lba(uint32_t lba, uint8_t* wbuf);
 int read_lba(uint32_t lba, uint8_t* rbuf);
 int trim_lba(uint32_t lba);
-int get_next_lba(void);
+int manual_markbad(uint32_t block);
 
 int l2p_lookup(uint32_t lba, uint32_t* block, uint32_t* page);
 
 int nand_page_read(uint8_t* rbuf, uint32_t block, uint32_t page);
 int nand_page_write(const uint8_t* wbuf, uint32_t block, uint32_t page);
 int nand_block_erase(uint32_t block);
-int nand_mark_bad(uint32_t block);
 
+static int get_next_lba(void);
+static int nand_mark_bad(uint32_t block, uint32_t reason);
 static int nand_page_erase(uint32_t block, uint32_t page);
 static int find_next_free_block(void);
 static int l2p_delete(uint32_t lba);

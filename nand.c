@@ -146,7 +146,7 @@ static int l2p_insert(uint32_t lba, uint32_t block, uint32_t page)
     return RET_SUCCESS;
 }
 
-int get_next_lba(void)
+static int get_next_lba(void)
 {
     uint32_t next_lba = nand_t->next_lba;
 
@@ -392,29 +392,6 @@ int nand_page_write(const uint8_t* wbuf, uint32_t block, uint32_t page)
     return RET_SUCCESS;
 }
 
-int nand_mark_bad(uint32_t block) {
-    if (block > NAND_SIZE)
-        return RET_FAILURE;
-
-    Block* blk = &(nand_t->blocks[block]);
-    blk->marked_bad = BAD_BLOCK;
-    uint32_t lba;
-
-    for (uint32_t page = 0; page < PAGES_PER_BLOCK; page++) {
-        if (p2l_lookup(block, page, &lba) == RET_FAILURE) {
-            DBG_MSG("error: could not get physical location for lba %d\n", lba);
-            continue;
-        }   
-        
-        if (trim_lba(lba) == RET_FAILURE) {
-            DBG_MSG("error: could not trim lba %d\n", lba);
-            return RET_FAILURE;
-        }
-    }
-
-    return RET_SUCCESS;
-}
-
 int nand_block_erase(uint32_t block)
 {
     if (block >= NAND_SIZE)
@@ -438,11 +415,16 @@ int nand_block_erase(uint32_t block)
         blk->erase_count++;
     } else {
         DBG_MSG("warning: erase count limit reached for block %d\n", block);
-        if (nand_mark_bad(block) == RET_FAILURE) {
+        if (nand_mark_bad(block, EXCEED_PE_CYCLES) == RET_FAILURE) {
             DBG_MSG("critical warning: failed to mark bad block %d\n", block);
         }
     }
     return RET_SUCCESS;
+}
+
+int manual_markbad(uint32_t block)
+{
+    return nand_mark_bad(block, MANUAL_MARKBAD);
 }
 
 static int nand_page_erase(uint32_t block, uint32_t page)
@@ -486,6 +468,66 @@ static int find_next_free_block(void)
     }
 
     return next_block;
+}
+
+static int nand_mark_bad(uint32_t block, uint32_t reason) {
+    if (block > NAND_SIZE)
+        return RET_FAILURE;
+
+    DBG_MSG("warning: marking %d block bad! (%x)\n", block, reason);
+
+    Block* blk = &(nand_t->blocks[block]);
+    blk->marked_bad = BAD_BLOCK;
+    uint32_t lba;
+
+    if ((reason & EXCEED_PE_CYCLES) > 0) {
+        // If exceed P/E cycles after successful block erase:
+        // no need to migrate the data, just trim LBAs in the block
+        for (uint32_t page = 0; page < PAGES_PER_BLOCK; page++) {
+            if (p2l_lookup(block, page, &lba) == RET_FAILURE) {
+                DBG_MSG("error: could not get physical location for lba %d\n", lba);
+                continue;
+            }   
+            
+            if (trim_lba(lba) == RET_FAILURE) {
+                DBG_MSG("error: could not trim lba %d\n", lba);
+                return RET_FAILURE;
+            }
+        }
+        blk->marked_bad |= EXCEED_PE_CYCLES;
+        return RET_SUCCESS;
+    }
+
+    if ((reason & MANUAL_MARKBAD) > 0) {
+        // migrate the data
+        uint8_t buf[PAGE_SIZE] = {0};
+        for (uint32_t page = 0; page < PAGES_PER_BLOCK; page++) {
+            if (p2l_lookup(block, page, &lba) == RET_FAILURE) {
+                DBG_MSG("error: could not get physical location for lba %d\n", lba);
+                continue;
+            }   
+
+            if (nand_page_read(buf, block, page) == RET_FAILURE) {
+                DBG_MSG("error: could not read page\n");
+                return RET_FAILURE;
+            }
+
+            if (write_lba(lba, buf) == RET_FAILURE) {
+                DBG_MSG("error: could not remap lba %d\n", lba);
+                return RET_FAILURE;
+            }
+
+            uint32_t new_block, new_page;
+            if (l2p_lookup(lba, &new_block, &new_page)) {
+                DBG_MSG("error: l2p fail\n");
+                return RET_FAILURE;
+            }
+
+            DBG_MSG("markbad block - remap lba %d from %d:%d to %d:%d\n", lba, block, page, new_block, new_page);
+        }
+    }
+
+    return RET_SUCCESS;
 }
 
 static inline uint32_t lba_hash(uint32_t lba) {
