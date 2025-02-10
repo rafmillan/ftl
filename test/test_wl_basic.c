@@ -26,7 +26,6 @@ int main(void)
         printf("Write to unexpected block! Expected: %d, Actual %d\n", 0, blk);
     }
 
-
     printf("%s [PASS]\n", __FILE__);
     return 0;
 }
