@@ -60,6 +60,11 @@ static int l2p_insert(uint32_t lba, uint32_t block, uint32_t page)
     if (lba > get_max_lba())
         return RET_FAILURE;
 
+    if (overflow_free_head == -1) {
+        DBG_MSG("fatal error: out of l2p mapping space\n");
+        return RET_FAILURE;
+    }
+
     uint32_t hash;
     L2PEntry* entry;
     Page* _page;
@@ -190,20 +195,20 @@ int write_lba(uint32_t lba, uint8_t* wbuf)
         return RET_FAILURE;
     }
 
+    uint32_t old_block;
+    uint32_t old_page;
+    if (l2p_lookup(lba, &old_block, &old_page) == RET_SUCCESS) {
+        DBG_MSG("LBA %d is already mapped, invalidating old page\n", lba);
+        trim_lba(lba);  // Invalidate old mapping
+    }
+
     Block* blk = &(nand_t->blocks[free_idx]);
-    
     if (l2p_insert(lba, free_idx, blk->next_wpage) == RET_FAILURE) {
         return RET_FAILURE;
     }
 
     if (nand_page_write(wbuf, free_idx, blk->next_wpage++) == RET_FAILURE) {
         return RET_FAILURE;
-    }
-
-    // If blockis full, decrement free block count
-    if (blk->next_wpage == PAGES_PER_BLOCK) {
-        nand_t->free_block_count--;
-        DBG_MSG("free block count = %d\n", nand_t->free_block_count);
     }
 
     return RET_SUCCESS;
@@ -371,6 +376,12 @@ int nand_page_write(const uint8_t* wbuf, uint32_t block, uint32_t page)
         //DBG_MSG("nand write data %d:%d:%d (0x%02X) -> LBA %d\n", block, page, i, pg->data[i], nand_t->next_lba);
     }
 
+    // If block is full, decrement free block count
+    if (blk->next_wpage == PAGES_PER_BLOCK - 1) {
+        nand_t->free_block_count--;
+        DBG_MSG("free block count = %d\n", nand_t->free_block_count);
+    }
+
     return RET_SUCCESS;
 }
 
@@ -387,12 +398,17 @@ int nand_block_erase(uint32_t block)
     // Erase all pages
     for (page = 0; page < PAGES_PER_BLOCK; page++) {
         Page* pg = &(blk->pages[page]);
-        nand_page_erase(block, page);
+        if (nand_page_erase(block, page) == RET_FAILURE) {
+            return RET_FAILURE;
+        }
     }
 
-    blk->erase_count++;
     blk->next_wpage = 0;
-    nand_t->free_block_count++;
+    if (blk->erase_count < MAX_ERASE_CYCLES) {
+        blk->erase_count++;
+    } else {
+        DBG_MSG("warning: erase count limit reached for block %d\n", block);
+    }
     return RET_SUCCESS;
 }
 
@@ -419,11 +435,12 @@ static int nand_page_erase(uint32_t block, uint32_t page)
 static int find_next_free_block(void)
 {
     uint32_t min_count = MAX_ERASE_CYCLES;
-    uint32_t next_block = -1;
+    int next_block = -1;
 
     for (uint32_t i = 0; i < NAND_SIZE; i++) {
         if (nand_t->blocks[i].next_wpage != PAGES_PER_BLOCK) {
-            if (nand_t->blocks[i].erase_count < min_count) {
+            if (nand_t->blocks[i].erase_count < min_count && 
+                nand_t->blocks[i].erase_count != MAX_ERASE_CYCLES) {
                 min_count = nand_t->blocks[i].erase_count;
                 next_block = i;
             }

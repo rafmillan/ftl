@@ -50,7 +50,7 @@ typedef struct block Block;
 struct /*__attribute((packed))*/ nand {
     uint32_t max_lba;
     uint32_t next_lba;
-    uint32_t free_block_count;
+    uint32_t free_block_count;  // Use a priority queue (min-heap) or sorted list for erase_count
     Block blocks[NAND_SIZE];
 };
 typedef struct nand NAND;
@@ -65,6 +65,7 @@ void l2p_init(void);
 int write_lba(uint32_t lba, uint8_t* wbuf);
 int read_lba(uint32_t lba, uint8_t* rbuf);
 int trim_lba(uint32_t lba);
+int get_next_lba(void);
 
 int l2p_lookup(uint32_t lba, uint32_t* block, uint32_t* page);
 
